@@ -34,11 +34,11 @@ module Pipeline
   # * <b>Recoverable (requires user action)</b>: If a stage raises RecoverableError with
   #   <tt>input_required? == true</tt>, the pipeline gets :paused and can be
   #   resumed or cancelled by calling #resume and #cancel, respectively.
-  # 
+  #
   # * <b>Recoverable (can be automatically retried)</b>: If a stage raises
   #   RecoverableError with <tt>input_required? == false</tt>, the pipeline goes into
   #   :retry state and will be automatically retried. This is currently achieved by
-  #   +delayed_job+'s retry mechanism. Please refer to 
+  #   +delayed_job+'s retry mechanism. Please refer to
   #   http://github.com/collectiveidea/delayed_job for information about how to
   #   configure the maximum number of retry attempts.
   #
@@ -52,12 +52,12 @@ module Pipeline
   #  class SamplePipeline < Pipeline::Base
   #    self.default_failure_mode = :cancel
   #  end
-  # 
+  #
   # You can always go back to the default mode by calling:
   #   self.default_failure_mode = :pause
   #
   # == State Transitions
-  # 
+  #
   # The following diagram represents the state transitions a pipeline instance can
   # go through during its life-cycle:
   #
@@ -87,7 +87,7 @@ module Pipeline
   #
   #   class MakeDinnerPipeline < Pipeline::Base
   #     define_stages PrepareIngredients >> Cook
-  #     belongs_to :recipe, :foreign_key => 'external_id'
+  #     belongs_to :recipe, foreign_key: "external_id"
   #   end
   #
   # A Stage can reference this object as such:
@@ -99,7 +99,7 @@ module Pipeline
   #   end
   #
   # == Callbacks
-  # 
+  #
   # You can define custom callbacks to be called before (+before_pipeline+) and after
   # (+after_pipeline+) executing a pipeline. Example:
   #
@@ -120,7 +120,7 @@ module Pipeline
   #
   #     before_pipeline :wash_hands
   #     after_pipeline :serve_dinner
-  #     
+  #
   #     private
   #     def wash_hands
   #       puts "Washing hands before we start..."
@@ -130,7 +130,7 @@ module Pipeline
   #       puts "bon appetit!"
   #     end
   #   end
-  # 
+  #
   #   Pipeline.start(MakeDinnerPipeline.new)
   #
   # Outputs:
@@ -143,30 +143,39 @@ module Pipeline
   # example above), as an inline block, or as a +Callback+ object, as a regular
   # +ActiveRecord+ callback.
   class Base < ActiveRecord::Base
-    set_table_name :pipeline_instances
-    
+    self.table_name = 'pipeline_instances'
+
     # :not_started ---> :in_progress ---> :completed / :failed
     #                       ^ |
     #                       | v
     #                 :paused / :retry
+    VALID_STATUSES = [:not_started, :in_progress, :paused, :retry, :completed, :failed].freeze
+
     symbol_attr :status
     transactional_attr :status
-    private :status=
+
+    validates :status, inclusion: { in: VALID_STATUSES }
 
     # Allows access to the associated stages
     has_many :stages,
-      :class_name => 'Pipeline::Stage::Base',
-      :foreign_key => 'pipeline_instance_id',
-      :dependent => :destroy
+      class_name: 'Pipeline::Stage::Base',
+      foreign_key: 'pipeline_instance_id',
+      dependent: :destroy
 
-    class_inheritable_accessor :defined_stages, :instance_writer => false
-    self.defined_stages = []
+    class_attribute :defined_stages, instance_writer: false, default: []
+    class_attribute :failure_mode, instance_writer: false, default: :pause
 
-    class_inheritable_accessor :failure_mode, :instance_writer => false
-    self.failure_mode = :pause
-    
-    define_callbacks :before_pipeline, :after_pipeline
-    
+    define_callbacks :before_pipeline_callbacks
+    define_callbacks :after_pipeline_callbacks
+
+    def self.before_pipeline(*args, &block)
+      set_callback :before_pipeline_callbacks, :before, *args, &block
+    end
+
+    def self.after_pipeline(*args, &block)
+      set_callback :after_pipeline_callbacks, :before, *args, &block
+    end
+
     # Defines the stages of this pipeline. Please refer to section
     # <em>"Pipeline Stages"</em> above
     def self.define_stages(stages)
@@ -192,16 +201,16 @@ module Pipeline
     #       self[:special_attribute] ||= "standard value"
     #     end
     #   end
-    def after_initialize
+    after_initialize do
       if new_record?
         self[:status] = :not_started
         self.class.defined_stages.each do |stage_class|
-          stages << stage_class.new(:pipeline => self)
+          stages << stage_class.new(pipeline: self)
         end
       end
     end
-    
-    # Standard +delayed_job+ method called when executing this pipeline. Raises   
+
+    # Standard +delayed_job+ method called when executing this pipeline. Raises
     # InvalidStatusError if pipeline is in an invalid state for execution (e.g.
     # already cancelled, or completed).
     #
@@ -230,39 +239,40 @@ module Pipeline
         _complete_with_status(failure_mode == :cancel ? :failed : :paused)
       end
     end
-    
+
     # Attempts to cancel this pipeline. Raises InvalidStatusError if pipeline is in
     # an invalid state for cancelling (e.g. already cancelled, or completed)
     def cancel
       _check_valid_status
       _complete_with_status(:failed)
     end
-    
+
     # Attempts to resume this pipeline. Raises InvalidStatusError if pipeline is in
     # an invalid state for resuming (e.g. already cancelled, or completed)
     def resume
       _check_valid_status
     end
-    
-    private
+
     def ok_to_resume?
       [:not_started, :paused, :retry].include?(status)
     end
+
+    private
 
     def _check_valid_status
       reload unless new_record?
       raise InvalidStatusError.new(status) unless ok_to_resume?
     end
-    
+
     def _setup
       self.attempts += 1
       self.status = :in_progress
-      run_callbacks(:before_pipeline)
+      run_callbacks(:before_pipeline_callbacks)
     end
-    
-    def _complete_with_status(status)
-      self.status = status
-      run_callbacks(:after_pipeline)
+
+    def _complete_with_status(new_status)
+      self.status = new_status
+      run_callbacks(:after_pipeline_callbacks)
     end
   end
 end

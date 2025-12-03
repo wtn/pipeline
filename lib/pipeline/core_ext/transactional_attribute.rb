@@ -7,7 +7,7 @@ module Pipeline
   # Example:
   #   class Car < ActiveRecord::Base
   #     transactional_attrs :state, :engine_state
-  #     
+  #
   #     def run
   #       self.engine_state = :on if self.state == :on
   #     end
@@ -17,27 +17,25 @@ module Pipeline
   #   car.state = :on # this will save the record in a transaction
   #   car.run # Record will be saved again, since #run updates :engine_state
   module TransactionalAttribute
-    def self.included (base)
-      base.extend(ClassMethods)
-    end
+    extend ActiveSupport::Concern
 
-    module ClassMethods #:nodoc:
+    class_methods do
       def transactional_attrs(*attributes)
         attributes.each do |attribute|
-          class_eval <<-EOD
-            def #{attribute.to_s}=(value)
-              ActiveRecord::Base.transaction(:requires_new => true) do
-                write_attribute('#{attribute.to_s}', value)
-                save!
-              end
+          define_method("#{attribute}=") do |value|
+            ActiveRecord::Base.transaction(requires_new: true) do
+              write_attribute(attribute.to_s, value)
+              save!
             end
-          EOD
+          end
         end
       end
-      
+
       alias_method :transactional_attr, :transactional_attrs
     end
   end
 end
 
-ActiveRecord::Base.send(:include, Pipeline::TransactionalAttribute)
+ActiveSupport.on_load(:active_record) do
+  include Pipeline::TransactionalAttribute
+end

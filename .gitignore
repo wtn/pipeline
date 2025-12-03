@@ -6,3 +6,5 @@ rdoc
 pkg
 pipeline.log
 pipeline.sqlite
+pipeline.sqlite-*
+Gemfile.lock

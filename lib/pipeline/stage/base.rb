@@ -40,7 +40,7 @@ module Pipeline
     # the stage to a :failed state.
     #
     # == State Transitions
-    # 
+    #
     # The following diagram represents the state transitions a stage instance can
     # go through during its life-cycle:
     #
@@ -56,7 +56,7 @@ module Pipeline
     # [:failed]      If an error occurs, the stage goes into this stage.
     #
     # == Callbacks
-    # 
+    #
     # You can define custom callbacks to be called before (+before_stage+) and after
     # (+after_stage+) executing a stage. Example:
     #
@@ -66,7 +66,7 @@ module Pipeline
     #     def run
     #       puts "Slicing..."
     #     end
-    #     
+    #
     #     protected
     #     def wash_ingredients
     #       puts "Washing..."
@@ -91,7 +91,7 @@ module Pipeline
     #   end
     #
     #   Pipeline.start(MakeDinnerPipeline.new)
-    # 
+    #
     # Outputs:
     #   Washing...
     #   Slicing...
@@ -102,31 +102,44 @@ module Pipeline
     # example above), as an inline block, or as a +Callback+ object, as a regular
     # +ActiveRecord+ callback.
     class Base < ActiveRecord::Base
-      set_table_name :pipeline_stages
-      
+      self.table_name = 'pipeline_stages'
+
       # :not_started ---> :in_progress ---> :completed
       #                       ^ |
       #                       | v
       #                     :failed
+      VALID_STATUSES = [:not_started, :in_progress, :completed, :failed].freeze
+
       symbol_attr :status
       transactional_attr :status
-      private :status=
-      
-      # Allows access to the associated pipeline
-      belongs_to :pipeline, :class_name => "Pipeline::Base", :foreign_key => 'pipeline_instance_id'
-            
-      class_inheritable_accessor :default_name, :instance_writer => false
 
-      define_callbacks :before_stage, :after_stage
+      validates :status, inclusion: { in: VALID_STATUSES }
+
+      # Allows access to the associated pipeline
+      belongs_to :pipeline, class_name: 'Pipeline::Base', foreign_key: 'pipeline_instance_id', optional: true
+
+      class_attribute :default_name, instance_writer: false
+
+      define_callbacks :before_stage_callbacks
+      define_callbacks :after_stage_callbacks
+
+      def self.before_stage(*args, &block)
+        set_callback :before_stage_callbacks, :before, *args, &block
+      end
+
+      def self.after_stage(*args, &block)
+        set_callback :after_stage_callbacks, :before, *args, &block
+      end
 
       @@chain = []
+
       # Method used for chaining stages on a pipeline sequence. Please refer to
       # Pipeline::Base for example usages.
       def self.>>(next_stage)
         @@chain << self
         next_stage
       end
-      
+
       # Method used by Pipeline::Base to construct its chain of stages. Please
       # refer to Pipeline::Base
       def self.build_chain
@@ -134,7 +147,7 @@ module Pipeline
         @@chain = []
         chain
       end
-      
+
       # Standard ActiveRecord callback to setup initial name and status
       # when a new stage is instantiated. If you override this callback, make
       # sure to call +super+:
@@ -145,20 +158,20 @@ module Pipeline
       #       self[:special_attribute] ||= "standard value"
       #     end
       #   end
-      def after_initialize
+      after_initialize do
         if new_record?
           self[:status] = :not_started
-          self.name ||= (default_name || self.class).to_s
+          self.name ||= (self.class.default_name || self.class).to_s
         end
       end
-      
+
       # Returns <tt>true</tt> if the stage is in a :completed state, <tt>false</tt>
       # otherwise.
       def completed?
         status == :completed
       end
-      
-      # Standard method called when executing this stage. Raises   
+
+      # Standard method called when executing this stage. Raises
       # InvalidStatusError if stage is in an invalid state for execution (e.g.
       # already completed, or in progress).
       #
@@ -173,13 +186,13 @@ module Pipeline
           run
           self.status = :completed
         rescue Exception => e
-          logger.info("Error on stage #{default_name}: #{e.message}")
+          logger.info("Error on stage #{self.class.default_name}: #{e.message}")
           logger.info(e.backtrace.join("\n"))
           self.message = e.message
           self.status = :failed
           raise e
         ensure
-          run_callbacks(:after_stage)
+          run_callbacks(:after_stage_callbacks)
         end
       end
 
@@ -188,13 +201,14 @@ module Pipeline
       def run
         raise "This method must be implemented by any subclass of Pipeline::Stage::Base"
       end
-      
+
       private
+
       def _setup
         self.attempts += 1
         self.message = nil
         self.status = :in_progress
-        run_callbacks(:before_stage)
+        run_callbacks(:before_stage_callbacks)
       end
     end
   end
